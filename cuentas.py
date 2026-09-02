@@ -8,6 +8,9 @@ from datetime import datetime, timezone
 GIST_ID = "5b820c7ae6023afbfb862b25b5e4c177"  # mismo valor que reportar.py (Task 3)
 GIST_FILE = "estado.json"
 FRESCO_S = 900
+# Una máquina que lleva más de un día sin reportar ya no está en uso: no se lista.
+# Sin esto el tablero arrastra fantasmas (un compu renombrado deja una entrada por nombre).
+EN_USO_S = 86400
 
 
 def _ts(iso):
@@ -22,8 +25,16 @@ def _semaforo(score):
     return "verde" if score < 50 else ("amarillo" if score <= 80 else "rojo")
 
 
+def _en_uso(ahora, m):
+    """Fecha ilegible → fuera: `maquina()` la usaría para `fresco` y reventaría el render."""
+    try:
+        return _edad(ahora, m["reportado"]) <= EN_USO_S
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
 def agregar(estado, ahora):
-    maquinas = estado.get("maquinas") or {}
+    maquinas = {k: m for k, m in (estado.get("maquinas") or {}).items() if _en_uso(ahora, m)}
     cupos = estado.get("cuentas") or {}
     aliases = sorted(set(cupos) | {m["cuenta"] for m in maquinas.values() if m.get("cuenta")})
 

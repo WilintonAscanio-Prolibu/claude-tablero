@@ -16,6 +16,10 @@ TABLERO_DIR = Path.home() / ".claude-tablero"
 TOKEN_PATH = TABLERO_DIR / "token"
 LOG_PATH = TABLERO_DIR / "reportar.log"
 ISO = "%Y-%m-%dT%H:%M:%SZ"
+# Toda entrada sin datos nuevos hace más de una semana se borra del gist. `fusionar` solo
+# agregaba, así que el estado crecía para siempre: un compu renombrado dejaba un fantasma
+# por cada nombre, y una cuenta que nadie volvió a usar seguía figurando con su cupo viejo.
+PURGA_S = 7 * 86400
 
 
 def elegir_clave(local_hostname, hostname_s):
@@ -55,16 +59,26 @@ def ultima_actividad(projects_dir):
     return {"hace": hace, "proyecto": proyecto}
 
 
+def vigente(ahora, iso):
+    """¿La entrada sigue dentro de la ventana de purga? Fecha ilegible: se conserva."""
+    try:
+        edad = (datetime.strptime(ahora, ISO) - datetime.strptime(iso, ISO)).total_seconds()
+    except (TypeError, ValueError):
+        return True
+    return edad <= PURGA_S
+
+
 def fusionar(estado, clave, cuenta, actividad, cupo, ahora):
     estado = dict(estado) if isinstance(estado, dict) else {}
     estado["version"] = 1
     maquinas = dict(estado.get("maquinas") or {})
     maquinas[clave] = {"cuenta": cuenta, "ultima_actividad": actividad, "reportado": ahora}
-    estado["maquinas"] = maquinas
     cuentas = dict(estado.get("cuentas") or {})
     if cuenta and cupo:
         cuentas[cuenta] = {**cupo, "medido": ahora, "por": clave}
-    estado["cuentas"] = cuentas
+    # Lo recién escrito tiene fecha `ahora`, así que la purga nunca toca este reporte.
+    estado["maquinas"] = {k: m for k, m in maquinas.items() if vigente(ahora, m.get("reportado"))}
+    estado["cuentas"] = {k: c for k, c in cuentas.items() if vigente(ahora, c.get("medido"))}
     return estado
 
 

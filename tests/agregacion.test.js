@@ -1,6 +1,6 @@
 const { test } = require("node:test");
 const assert = require("node:assert");
-const { agregar, humanizar } = require("../agregacion.js");
+const { agregar, humanizar, EN_USO_S } = require("../agregacion.js");
 
 const AHORA = "2026-08-11T18:00:00Z";
 
@@ -65,6 +65,45 @@ test("cuenta sin cupo va al final", () => {
   const agg = agregar(e, AHORA);
   assert.equal(agg.cuentas[agg.cuentas.length - 1].alias, "Alpha");
   assert.equal(agg.cuentas[agg.cuentas.length - 1].semaforo, null);
+});
+
+test("maquina sin reportar hace mas de un dia no se muestra", () => {
+  const e = estadoDemo();
+  e.maquinas.Fantasma = { cuenta: "Gamma", ultima_actividad: null, reportado: "2026-08-09T18:00:00Z" };
+  e.maquinas.Pro.reportado = "2026-08-10T17:59:59Z"; // 1 d + 1 s → fuera
+  const agg = agregar(e, AHORA);
+  assert.deepEqual(agg.cuentas.find(c => c.alias === "Gamma").maquinas.map(m => m.clave), ["Mini"]);
+  assert.deepEqual(agg.sin_sesion, []);
+});
+
+test("el borde del dia sigue adentro", () => {
+  const e = estadoDemo();
+  e.maquinas.Mini.reportado = "2026-08-10T18:00:00Z"; // exactamente EN_USO_S
+  assert.equal(EN_USO_S, 86400);
+  const agg = agregar(e, AHORA);
+  assert.deepEqual(agg.cuentas.find(c => c.alias === "Gamma").maquinas.map(m => m.clave), ["Mini"]);
+});
+
+test("cuenta que solo existia por una maquina fantasma desaparece", () => {
+  const e = estadoDemo();
+  e.maquinas.Viejo = { cuenta: "Zeta", ultima_actividad: null, reportado: "2026-07-20T18:00:00Z" };
+  const agg = agregar(e, AHORA);
+  assert.ok(!agg.cuentas.some(c => c.alias === "Zeta"));
+});
+
+test("cuenta con cupo sobrevive aunque su maquina sea fantasma", () => {
+  const e = estadoDemo();
+  e.maquinas.Air.reportado = "2026-07-20T18:00:00Z";
+  const alpha = agregar(e, AHORA).cuentas.find(c => c.alias === "Alpha");
+  assert.deepEqual(alpha.maquinas, []);
+  assert.equal(alpha.cupo.cinco_horas.pct, 15); // el cupo se sigue viendo: es lo que decide qué usar
+});
+
+test("reportado ilegible queda fuera en vez de romper el render", () => {
+  const e = estadoDemo();
+  e.maquinas.Mini.reportado = "no es fecha";
+  const agg = agregar(e, AHORA);
+  assert.deepEqual(agg.cuentas.find(c => c.alias === "Gamma").maquinas, []);
 });
 
 test("humanizar", () => {

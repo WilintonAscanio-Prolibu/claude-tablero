@@ -100,6 +100,46 @@ class TestFusionar(unittest.TestCase):
         self.assertEqual(estado.get("cuentas", {}), {})
 
 
+class TestPurga(unittest.TestCase):
+    AHORA = "2026-08-11T18:00:00Z"
+
+    def _previo(self, reportado, medido):
+        return {"version": 1,
+                "maquinas": {"Fantasma": {"cuenta": "Alpha", "ultima_actividad": None,
+                                          "reportado": reportado}},
+                "cuentas": {"Alpha": {"cinco_horas": {"pct": 10, "resetea": None},
+                                      "semanal": {"pct": 5, "resetea": None},
+                                      "medido": medido, "por": "Fantasma"}}}
+
+    def test_borra_maquina_y_cuenta_de_hace_mas_de_una_semana(self):
+        previo = self._previo("2026-08-04T17:59:59Z", "2026-08-04T17:59:59Z")
+        estado = reportar.fusionar(previo, "Mini", "Gamma", None, None, self.AHORA)
+        self.assertNotIn("Fantasma", estado["maquinas"])
+        self.assertNotIn("Alpha", estado["cuentas"])
+        self.assertIn("Mini", estado["maquinas"])
+
+    def test_el_borde_de_la_semana_se_conserva(self):
+        previo = self._previo("2026-08-04T18:00:00Z", "2026-08-04T18:00:00Z")
+        estado = reportar.fusionar(previo, "Mini", "Gamma", None, None, self.AHORA)
+        self.assertIn("Fantasma", estado["maquinas"])
+        self.assertIn("Alpha", estado["cuentas"])
+
+    def test_nunca_purga_el_reporte_propio(self):
+        previo = self._previo("2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z")
+        cupo = {"cinco_horas": {"pct": 1, "resetea": None}, "semanal": {"pct": 2, "resetea": None}}
+        estado = reportar.fusionar(previo, "Mini", "Gamma", None, cupo, self.AHORA)
+        self.assertIn("Mini", estado["maquinas"])
+        self.assertIn("Gamma", estado["cuentas"])
+
+    def test_fecha_ilegible_o_ausente_se_conserva(self):
+        # Al escribir se conserva ante la duda: borrar del gist no tiene vuelta atrás.
+        previo = self._previo("no es fecha", None)
+        del previo["cuentas"]["Alpha"]["medido"]
+        estado = reportar.fusionar(previo, "Mini", "Gamma", None, None, self.AHORA)
+        self.assertIn("Fantasma", estado["maquinas"])
+        self.assertIn("Alpha", estado["cuentas"])
+
+
 class TestParsearCupo(unittest.TestCase):
     def _fixture(self):
         p = Path(__file__).parent / "fixtures" / "uso_real.json"

@@ -1,8 +1,17 @@
 // Reglas de agregación del tablero — espejo exacto de cuentas.py (§4.3 del spec).
 const FRESCO_S = 900;
+// Una máquina que lleva más de un día sin reportar ya no está en uso: no se pinta.
+// Sin esto el tablero arrastra fantasmas (un compu renombrado deja una entrada por nombre).
+const EN_USO_S = 86400;
 
 function edad(ahora, iso) {
   return (Date.parse(ahora) - Date.parse(iso)) / 1000;
+}
+
+// Fecha ilegible → fuera (NaN): pintarla no aporta nada y en cuentas.py `maquina()`
+// la usaría para calcular `fresco`, reventando el render de la terminal.
+function enUso(ahora, m) {
+  return edad(ahora, m.reportado) <= EN_USO_S;
 }
 
 function semaforo(score) {
@@ -10,7 +19,8 @@ function semaforo(score) {
 }
 
 function agregar(estado, ahora) {
-  const maquinas = estado.maquinas || {};
+  const maquinas = Object.fromEntries(
+    Object.entries(estado.maquinas || {}).filter(([, m]) => enUso(ahora, m)));
   const cupos = estado.cuentas || {};
   const aliases = [...new Set([
     ...Object.keys(cupos),
@@ -65,4 +75,4 @@ function humanizar(segundos) {
   return `hace ${Math.floor(segundos / 86400)} d`;
 }
 
-if (typeof module !== "undefined") module.exports = { agregar, humanizar, FRESCO_S };
+if (typeof module !== "undefined") module.exports = { agregar, humanizar, FRESCO_S, EN_USO_S };

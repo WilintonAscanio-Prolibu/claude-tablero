@@ -83,6 +83,47 @@ class TestAgregar(unittest.TestCase):
         self.assertEqual(agg["cuentas"][-1]["alias"], "Alpha")  # sin cupo al final
 
 
+class TestEnUso(unittest.TestCase):
+    def test_maquina_sin_reportar_hace_mas_de_un_dia_no_se_lista(self):
+        e = estado_demo()
+        e["maquinas"]["Fantasma"] = {"cuenta": "Gamma", "ultima_actividad": None,
+                                     "reportado": "2026-08-09T18:00:00Z"}
+        e["maquinas"]["Pro"]["reportado"] = "2026-08-10T17:59:59Z"  # 1 d + 1 s → fuera
+        agg = cuentas.agregar(e, AHORA)
+        gamma = [c for c in agg["cuentas"] if c["alias"] == "Gamma"][0]
+        self.assertEqual([m["clave"] for m in gamma["maquinas"]], ["Mini"])
+        self.assertEqual(agg["sin_sesion"], [])
+
+    def test_el_borde_del_dia_sigue_adentro(self):
+        e = estado_demo()
+        e["maquinas"]["Mini"]["reportado"] = "2026-08-10T18:00:00Z"  # exactamente EN_USO_S
+        self.assertEqual(cuentas.EN_USO_S, 86400)
+        gamma = [c for c in cuentas.agregar(e, AHORA)["cuentas"] if c["alias"] == "Gamma"][0]
+        self.assertEqual([m["clave"] for m in gamma["maquinas"]], ["Mini"])
+
+    def test_cuenta_que_solo_existia_por_maquina_fantasma_desaparece(self):
+        e = estado_demo()
+        e["maquinas"]["Viejo"] = {"cuenta": "Zeta", "ultima_actividad": None,
+                                  "reportado": "2026-07-20T18:00:00Z"}
+        agg = cuentas.agregar(e, AHORA)
+        self.assertNotIn("Zeta", [c["alias"] for c in agg["cuentas"]])
+
+    def test_cuenta_con_cupo_sobrevive_aunque_su_maquina_sea_fantasma(self):
+        e = estado_demo()
+        e["maquinas"]["Air"]["reportado"] = "2026-07-20T18:00:00Z"
+        alpha = [c for c in cuentas.agregar(e, AHORA)["cuentas"] if c["alias"] == "Alpha"][0]
+        self.assertEqual(alpha["maquinas"], [])
+        self.assertEqual(alpha["cupo"]["cinco_horas"]["pct"], 15)  # el cupo decide qué usar: se conserva
+
+    def test_reportado_ilegible_queda_fuera_en_vez_de_romper_el_render(self):
+        e = estado_demo()
+        e["maquinas"]["Mini"]["reportado"] = "no es fecha"
+        agg = cuentas.agregar(e, AHORA)
+        gamma = [c for c in agg["cuentas"] if c["alias"] == "Gamma"][0]
+        self.assertEqual(gamma["maquinas"], [])
+        cuentas.render(agg, AHORA)  # antes reventaba con ValueError
+
+
 class TestHumanizar(unittest.TestCase):
     def test_rangos(self):
         self.assertEqual(cuentas.humanizar(30), "hace un momento")
