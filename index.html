@@ -207,6 +207,7 @@
   .cuadros { display: grid; grid-template-columns: 1fr 1fr; }
   .cuadro { padding: 18px 28px 20px; min-width: 0; }
   .cuadro + .cuadro { border-left: 1px solid var(--borde-2); }
+  .cuadro.ancho { grid-column: 1 / -1; border-left: 0; border-top: 1px solid var(--borde-2); }
   .cuadro h3 { font-family: "Geist Mono", ui-monospace, monospace; font-size: 11px; font-weight: 500; letter-spacing: .05em;
                text-transform: uppercase; color: var(--tinta-3); margin-bottom: 12px; }
   .barra-fila { display: grid; grid-template-columns: minmax(150px, 230px) 1fr 84px; gap: 14px; align-items: center; padding: 7px 0; }
@@ -432,12 +433,13 @@ function consumoHtml(estado) {
     <div class="eje">${c.porDia.map(d => `<span class="${d.dia === hoy ? "hoy" : ""}">${new Date(d.dia + "T12:00:00").getDate()}</span>`).join("")}</div></div>`;
   }
 
-  // Por modelo y por cuenta, a propósito no por máquina: el tablero responde qué modelo gasta y
-  // qué cuenta se agota, no quién. (El gist sí trae el dato por compu: así está diseñado.)
-  const maxModelo = c.porModelo[0].total, maxCuenta = c.porCuenta[0].total;
+  // Por máquina es el dato de origen (cada compu publica el suyo); por cuenta es derivado:
+  // suma las máquinas que hoy están en esa cuenta.
+  const maxModelo = c.porModelo[0].total, maxCuenta = c.porCuenta[0].total, maxMaq = c.porMaquina[0].total;
   html += `<div class="cuadros">
     <div class="cuadro"><h3>Por modelo</h3>${c.porModelo.map(m => filaBarra(m.nombre, desglose(m), m, maxModelo, m.familia)).join("")}</div>
     <div class="cuadro"><h3>Por cuenta</h3>${c.porCuenta.map(x => filaBarra(x.alias, desglose(x), x, maxCuenta)).join("")}</div>
+    <div class="cuadro ancho"><h3>Por máquina</h3>${c.porMaquina.map(m => filaBarra(m.clave, `${m.cuenta || "sin sesión"} · ${desglose(m)}`, m, maxMaq)).join("")}</div>
   </div></section>`;
   return html;
 }
