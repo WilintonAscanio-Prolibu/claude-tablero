@@ -2,7 +2,8 @@
 
 ¿Cuál cuenta de Claude uso ahora? Tablero de cupo (5 h + semanal + Fable),
 mapeo compu ↔ cuenta, última actividad de todos los Macs y consumo de tokens
-por modelo, cuenta y máquina (hoy / 7 / 14 días, filtrable por cuenta o máquina).
+por modelo, cuenta y máquina (hoy / 7 / 14 días, filtrable por cuenta o máquina),
+en dos columnas: cupo a la izquierda, consumo a la derecha.
 
 - **Tablero web:** https://santiago-prolibu.github.io/claude-tablero/
 - **Terminal:** `cuentas`
