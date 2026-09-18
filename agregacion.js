@@ -75,4 +75,114 @@ function humanizar(segundos) {
   return `hace ${Math.floor(segundos / 86400)} d`;
 }
 
-if (typeof module !== "undefined") module.exports = { agregar, humanizar, FRESCO_S, EN_USO_S };
+/* ─ consumo de tokens (lo publica cada compu en maquinas[clave].consumo.dias) ─ */
+
+// Orden fijo: la familia decide el color en todos los gráficos, así Fable siempre se ve igual.
+const FAMILIAS = ["Opus", "Fable", "Sonnet", "Haiku", "Otro"];
+const CAMPOS = ["msgs", "entrada", "salida", "cache_escr", "cache_lect"];
+
+function familiaModelo(id) {
+  const m = String(id).toLowerCase();
+  return FAMILIAS.find(f => m.includes(f.toLowerCase())) || "Otro";
+}
+
+// "claude-opus-5" → "Opus 5"; "claude-fable-5-1" → "Fable 5.1"; "claude-opus-5[1m]" → "Opus 5 · 1M";
+// "claude-haiku-4-5-20251001" → "Haiku 4.5". Lo que no encaje se muestra tal cual.
+function nombreModelo(id) {
+  const m = /^claude-([a-z]+)-(\d+)(?:-(\d+))?(?:-\d{8})?(\[1m\])?$/i.exec(String(id));
+  if (!m) return String(id);
+  const familia = m[1][0].toUpperCase() + m[1].slice(1);
+  return `${familia} ${m[2]}${m[3] ? "." + m[3] : ""}${m[4] ? " · 1M" : ""}`;
+}
+
+function sumar(destino, b) {
+  for (const k of CAMPOS) destino[k] = (destino[k] || 0) + (Number(b[k]) || 0);
+  return destino;
+}
+
+function totales(b) {
+  const entrada = (b.entrada || 0) + (b.cache_escr || 0);
+  const salida = b.salida || 0, cache = b.cache_lect || 0;
+  return { msgs: b.msgs || 0, entrada, salida, cache, total: entrada + salida + cache };
+}
+
+function diaMas(dia, n) {
+  const d = new Date(dia + "T00:00:00Z");
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
+}
+
+// `hoy` es la fecha local de quien mira (YYYY-MM-DD); la ventana son los `dias` días que
+// terminan hoy. Los días del gist son locales de cada compu, así que "hoy" coincide para
+// todos los que estén en la misma zona horaria.
+function consumo(estado, hoy, dias) {
+  const desde = diaMas(hoy, -(dias - 1));
+  const enVentana = d => d >= desde && d <= hoy;
+  const porDia = {}, porModelo = {}, porMaquina = {}, porCuenta = {}, porFamilia = {};
+  const global = {};
+
+  for (const [clave, m] of Object.entries(estado.maquinas || {})) {
+    const diasM = (m.consumo && m.consumo.dias) || {};
+    const maq = { clave, cuenta: m.cuenta || null, porFamilia: {}, acumulado: {} };
+    for (const [dia, modelos] of Object.entries(diasM)) {
+      if (!enVentana(dia) || !modelos || typeof modelos !== "object") continue;
+      for (const [id, b] of Object.entries(modelos)) {
+        if (!b || typeof b !== "object") continue;
+        const fam = familiaModelo(id);
+        sumar(global, b);
+        sumar(maq.acumulado, b);
+        sumar(maq.porFamilia[fam] = maq.porFamilia[fam] || {}, b);
+        sumar(porModelo[id] = porModelo[id] || {}, b);
+        sumar(porFamilia[fam] = porFamilia[fam] || {}, b);
+        const pd = porDia[dia] = porDia[dia] || { porFamilia: {}, acumulado: {} };
+        sumar(pd.acumulado, b);
+        sumar(pd.porFamilia[fam] = pd.porFamilia[fam] || {}, b);
+      }
+    }
+    if (maq.acumulado.msgs) porMaquina[clave] = maq;
+  }
+
+  for (const maq of Object.values(porMaquina)) {
+    const alias = maq.cuenta || "sin sesión";
+    const c = porCuenta[alias] = porCuenta[alias] || { alias, porFamilia: {}, acumulado: {}, maquinas: [] };
+    sumar(c.acumulado, maq.acumulado);
+    for (const [fam, b] of Object.entries(maq.porFamilia)) sumar(c.porFamilia[fam] = c.porFamilia[fam] || {}, b);
+    c.maquinas.push(maq.clave);
+  }
+
+  const famTotales = pf => Object.fromEntries(FAMILIAS.filter(f => pf[f]).map(f => [f, totales(pf[f]).total]));
+  const fila = (extra, acumulado, pf) => ({ ...extra, ...totales(acumulado), porFamilia: famTotales(pf) });
+  const desc = (a, b) => b.total - a.total || (a.nombre || a.alias || a.clave).localeCompare(b.nombre || b.alias || b.clave);
+
+  const listaDias = [];
+  for (let d = desde; d <= hoy; d = diaMas(d, 1)) {
+    const pd = porDia[d] || { porFamilia: {}, acumulado: {} };
+    listaDias.push(fila({ dia: d }, pd.acumulado, pd.porFamilia));
+  }
+
+  return {
+    desde, hasta: hoy, dias,
+    ...totales(global),
+    porDia: listaDias,
+    porFamilia: FAMILIAS.filter(f => porFamilia[f]).map(f => ({ familia: f, ...totales(porFamilia[f]) })),
+    porModelo: Object.entries(porModelo)
+      .map(([id, b]) => ({ id, nombre: nombreModelo(id), familia: familiaModelo(id), ...totales(b) }))
+      .sort(desc),
+    porCuenta: Object.values(porCuenta).map(c => fila({ alias: c.alias, maquinas: c.maquinas.sort() }, c.acumulado, c.porFamilia)).sort(desc),
+    porMaquina: Object.values(porMaquina).map(m => fila({ clave: m.clave, cuenta: m.cuenta }, m.acumulado, m.porFamilia)).sort(desc),
+  };
+}
+
+// 950 → "950"; 12345 → "12 k"; 4200000 → "4,2 M"; 2.4e9 → "2,4 mil M". Un decimal solo bajo 10; coma decimal es-CO.
+function humanizarTokens(n) {
+  n = Number(n) || 0;
+  const f = (v, u) => v.toLocaleString("es-CO", { maximumFractionDigits: v < 10 ? 1 : 0 }) + u;
+  if (n >= 1e9) return f(n / 1e9, " mil M");
+  if (n >= 1e6) return f(n / 1e6, " M");
+  if (n >= 1e3) return f(n / 1e3, " k");
+  return String(Math.round(n));
+}
+
+if (typeof module !== "undefined") module.exports = {
+  agregar, humanizar, consumo, humanizarTokens, familiaModelo, nombreModelo, FAMILIAS, FRESCO_S, EN_USO_S,
+};

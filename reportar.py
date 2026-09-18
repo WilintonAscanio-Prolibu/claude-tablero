@@ -6,7 +6,7 @@ import subprocess
 import sys
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 GIST_ID = "5b820c7ae6023afbfb862b25b5e4c177"
@@ -20,6 +20,13 @@ ISO = "%Y-%m-%dT%H:%M:%SZ"
 # agregaba, así que el estado crecía para siempre: un compu renombrado dejaba un fantasma
 # por cada nombre, y una cuenta que nadie volvió a usar seguía figurando con su cupo viejo.
 PURGA_S = 7 * 86400
+# Días de historial de tokens que cada compu publica. Cubre la ventana semanal entera
+# más una semana de contexto; los .jsonl más viejos que esto ni se abren.
+CONSUMO_DIAS = 14
+CAMPOS_USO = (
+    ("entrada", "input_tokens"), ("salida", "output_tokens"),
+    ("cache_escr", "cache_creation_input_tokens"), ("cache_lect", "cache_read_input_tokens"),
+)
 
 
 def elegir_clave(local_hostname, hostname_s):
@@ -59,6 +66,69 @@ def ultima_actividad(projects_dir):
     return {"hace": hace, "proyecto": proyecto}
 
 
+def _momento_local(ts_iso, tz):
+    try:
+        return datetime.fromisoformat(ts_iso.replace("Z", "+00:00")).astimezone(tz)
+    except (TypeError, ValueError, AttributeError):
+        return None
+
+
+def consumo_tokens(projects_dir, ahora, dias=CONSUMO_DIAS, tz=None):
+    """Tokens por día y modelo, leídos de los .jsonl de Claude Code (sesiones y subagentes).
+
+    Cada mensaje del asistente trae `message.model` y `message.usage`. Claude Code escribe una
+    línea por bloque de contenido y el usage de las primeras es provisional (output_tokens de
+    3-6 mientras streamea), así que por cada `message.id` manda la última línea. Los días son
+    locales del compu: "hoy" significa lo mismo que para quien mira el tablero.
+    """
+    desde = ahora - timedelta(days=dias)
+    consumo = {}
+    for f in Path(projects_dir).rglob("*.jsonl"):
+        try:
+            if f.stat().st_mtime < desde.timestamp():
+                continue
+            with open(f, errors="replace") as fh:
+                mensajes = _mensajes_con_uso(fh)
+        except OSError:
+            continue
+        for m in mensajes.values():
+            cuando = _momento_local(m.get("timestamp"), tz)
+            if cuando is None or cuando < desde:
+                continue
+            msg = m["message"]
+            por_modelo = consumo.setdefault(cuando.strftime("%Y-%m-%d"), {})
+            b = por_modelo.setdefault(msg["model"], {"msgs": 0, **{k: 0 for k, _ in CAMPOS_USO}})
+            b["msgs"] += 1
+            for campo, origen in CAMPOS_USO:
+                try:
+                    b[campo] += int(msg["usage"].get(origen) or 0)
+                except (TypeError, ValueError):
+                    pass
+    return consumo
+
+
+def _mensajes_con_uso(fh):
+    """{message.id: última línea} de los mensajes del asistente con modelo y usage reales."""
+    mensajes = {}
+    for i, linea in enumerate(fh):
+        # Prefiltro barato (casi todo el archivo es otra cosa) que no depende de cómo se
+        # serialice el JSON; la comprobación real va sobre el objeto parseado.
+        if "assistant" not in linea:
+            continue
+        try:
+            m = json.loads(linea)
+        except json.JSONDecodeError:
+            continue
+        if m.get("type") != "assistant":
+            continue
+        msg = m.get("message") or {}
+        modelo = msg.get("model")
+        if not isinstance(msg.get("usage"), dict) or not modelo or modelo.startswith("<"):
+            continue  # <synthetic>: mensajes que Claude Code fabrica, no consumen
+        mensajes[msg.get("id") or m.get("requestId") or f"linea-{i}"] = m
+    return mensajes
+
+
 def vigente(ahora, iso):
     """¿La entrada sigue dentro de la ventana de purga? Fecha ilegible: se conserva."""
     try:
@@ -68,11 +138,13 @@ def vigente(ahora, iso):
     return edad <= PURGA_S
 
 
-def fusionar(estado, clave, cuenta, actividad, cupo, ahora):
+def fusionar(estado, clave, cuenta, actividad, cupo, ahora, consumo=None):
     estado = dict(estado) if isinstance(estado, dict) else {}
     estado["version"] = 1
     maquinas = dict(estado.get("maquinas") or {})
     maquinas[clave] = {"cuenta": cuenta, "ultima_actividad": actividad, "reportado": ahora}
+    if consumo is not None:
+        maquinas[clave]["consumo"] = {"dias": consumo}
     cuentas = dict(estado.get("cuentas") or {})
     if cuenta and cupo:
         cuentas[cuenta] = {**cupo, "medido": ahora, "por": clave}
@@ -112,12 +184,35 @@ def parsear_cupo(uso):
         def pct(ventana):
             return round(float(ventana["utilization"]))
 
-        return {
+        cupo = {
             "cinco_horas": {"pct": pct(fh), "resetea": fh.get("resets_at")},
             "semanal": {"pct": pct(sd), "resetea": sd.get("resets_at")},
         }
     except (KeyError, TypeError, ValueError):
         return None
+    modelos = limites_por_modelo(uso)
+    if modelos:
+        cupo["modelos"] = modelos
+    return cupo
+
+
+def limites_por_modelo(uso):
+    """Cupos semanales con alcance de modelo (`limits[]`, kind weekly_scoped): hoy solo Fable.
+
+    Es un límite aparte del semanal general: una cuenta puede tener Fable agotado y seguir
+    sirviendo para Opus. Un límite malformado se ignora sin tumbar el cupo general.
+    """
+    modelos = {}
+    for lim in (uso.get("limits") or []) if isinstance(uso, dict) else []:
+        try:
+            if lim.get("kind") != "weekly_scoped":
+                continue
+            nombre = (lim["scope"]["model"] or {}).get("display_name")
+            if nombre:
+                modelos[nombre] = {"pct": round(float(lim["percent"])), "resetea": lim.get("resets_at")}
+        except (KeyError, TypeError, ValueError, AttributeError):
+            continue
+    return modelos
 
 
 def armar_reporte(claude_json, projects_dir, local_hostname, hostname_s, uso, ahora):
@@ -125,7 +220,8 @@ def armar_reporte(claude_json, projects_dir, local_hostname, hostname_s, uso, ah
     cuenta = leer_cuenta(claude_json)
     actividad = ultima_actividad(projects_dir)
     cupo = parsear_cupo(uso) if (uso and cuenta) else None
-    return clave, cuenta, actividad, cupo
+    consumo = consumo_tokens(projects_dir, datetime.strptime(ahora, ISO).replace(tzinfo=timezone.utc))
+    return clave, cuenta, actividad, cupo, consumo
 
 
 def _gh_headers(pat=None):
@@ -191,7 +287,7 @@ def main(dry_run=False):
         except Exception as e:
             _log(f"uso fallo: {e}")
     ahora = datetime.now(timezone.utc).strftime(ISO)
-    clave, cuenta, actividad, cupo = armar_reporte(
+    clave, cuenta, actividad, cupo, consumo = armar_reporte(
         claude_json, Path.home() / ".claude" / "projects",
         _scutil_localhostname(), hostname_s, uso, ahora)
     pat = TOKEN_PATH.read_text().strip() if TOKEN_PATH.exists() else None
@@ -200,7 +296,7 @@ def main(dry_run=False):
         sys.exit(1)
     for intento in (1, 2):
         try:
-            estado = fusionar(gist_get(pat), clave, cuenta, actividad, cupo, ahora)
+            estado = fusionar(gist_get(pat), clave, cuenta, actividad, cupo, ahora, consumo)
             if dry_run:
                 print(json.dumps(estado, indent=2, ensure_ascii=False))
                 return

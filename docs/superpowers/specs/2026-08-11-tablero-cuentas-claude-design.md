@@ -68,7 +68,13 @@ Programación: **launchd** (`~/Library/LaunchAgents/com.prolibu.claude-tablero.p
     "MacBook-Pro-Santiago": {
       "cuenta": "Gamma",
       "ultima_actividad": { "hace": "2026-08-11T17:42:10Z", "proyecto": "prolibu-front-v2" },
-      "reportado": "2026-08-11T17:45:02Z"
+      "reportado": "2026-08-11T17:45:02Z",
+      "consumo": { "dias": {
+        "2026-08-11": {
+          "claude-opus-5":    { "msgs": 180, "entrada": 5194, "salida": 562017, "cache_escr": 2965952, "cache_lect": 79041629 },
+          "claude-fable-5-1": { "msgs": 12,  "entrada": 300,  "salida": 41000,  "cache_escr": 210000,  "cache_lect": 5100000 }
+        }
+      } }
     },
     "Mini-Oficina": {
       "cuenta": null,
@@ -80,12 +86,17 @@ Programación: **launchd** (`~/Library/LaunchAgents/com.prolibu.claude-tablero.p
     "Gamma": {
       "cinco_horas": { "pct": 62, "resetea": "2026-08-11T20:00:00Z" },
       "semanal":     { "pct": 31, "resetea": "2026-08-14T13:00:00Z" },
+      "modelos":     { "Fable": { "pct": 17, "resetea": "2026-08-14T13:00:00Z" } },
       "medido": "2026-08-11T17:45:02Z",
       "por": "MacBook-Pro-Santiago"
     }
   }
 }
 ```
+
+**Consumo de tokens (`maquinas.<clave>.consumo`, añadido 2026-09-18).** Cada compu publica sus últimos 14 días de tokens por día y por id de modelo, leídos de los `.jsonl` de `~/.claude/projects/` (sesiones y subagentes). Es propiedad del **compu**, no de la cuenta: los `.jsonl` no dicen con qué cuenta se generó cada mensaje, así que las vistas atribuyen el consumo a la cuenta *actual* del compu. Por cada `message.id` cuenta la última línea (las primeras traen `output_tokens` provisional). Por eso los totales salen **menores que los de `/stats` de Claude Code**, que suma todas las líneas (una por bloque de contenido, cada una con el usage del mensaje completo) y por tanto infla ×2–4; verificado 2026-09-18: sin deduplicar, las sumas coinciden al token con `~/.claude/stats-cache.json`. Los días son locales del compu (`/stats` usa UTC). `entrada` = `input_tokens`, `cache_escr` = `cache_creation_input_tokens`, `cache_lect` = `cache_read_input_tokens`; las vistas presentan entrada + caché de escritura como "entrada" y la lectura de caché como "caché". Un reportero viejo simplemente no publica el bloque y el compu no aparece en la sección de consumo.
+
+**Cupo por modelo (`cuentas.<alias>.modelos`).** El endpoint de uso trae en `limits[]` límites semanales con alcance de modelo (`kind: weekly_scoped`, `scope.model.display_name`); hoy solo Fable. Es un cupo aparte del semanal general: Fable agotado no impide usar Opus, así que **no** entra en el score de la recomendación; solo se muestra. Ausente cuando el plan no lo reporta.
 
 El cupo es propiedad de la **cuenta**, no del compu: vive en el bloque `cuentas`, que guarda el **último cupo conocido por alias** y sobrevive a las rotaciones (si todos los compus deslogean de "Beta", su última medición queda ahí con su `medido`). `maquinas.<clave>.cuenta` es `null` cuando el compu está deslogueado. Una cuenta que nunca ha sido medida simplemente no está en `cuentas`. Campos en ISO-8601 UTC; las vistas convierten a hora local.
 
