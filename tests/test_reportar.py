@@ -156,26 +156,154 @@ class TestParsearCupo(unittest.TestCase):
         self.assertIsNone(reportar.parsear_cupo({}))
         self.assertIsNone(reportar.parsear_cupo({"error": "x"}))
 
+    def test_limite_semanal_de_fable(self):
+        # El fixture trae un `weekly_scoped` con scope.model.display_name = Fable al 17 %.
+        cupo = reportar.parsear_cupo(self._fixture())
+        self.assertEqual(cupo["modelos"]["Fable"]["pct"], 17)
+        self.assertTrue(cupo["modelos"]["Fable"]["resetea"].startswith("2026-08-18"))
+
+    def test_sin_limites_por_modelo_no_agrega_la_clave(self):
+        uso = self._fixture()
+        uso["limits"] = [l for l in uso["limits"] if l["kind"] != "weekly_scoped"]
+        self.assertNotIn("modelos", reportar.parsear_cupo(uso))
+        uso["limits"] = None
+        self.assertNotIn("modelos", reportar.parsear_cupo(uso))
+
+    def test_limite_malformado_no_tumba_el_cupo(self):
+        uso = self._fixture()
+        uso["limits"].append({"kind": "weekly_scoped", "scope": None, "percent": "x"})
+        uso["limits"].append({"kind": "weekly_scoped", "scope": {"model": {"display_name": "Sonnet"}}, "percent": 42.4})
+        cupo = reportar.parsear_cupo(uso)
+        self.assertEqual(cupo["modelos"], {
+            "Fable": {"pct": 17, "resetea": "2026-08-18T03:59:59.048890+00:00"},
+            "Sonnet": {"pct": 42, "resetea": None}})
+
+
+def _linea(modelo, uso, ts="2026-08-11T15:00:00.000Z", mid="msg_1", tipo="assistant"):
+    return json.dumps({"type": tipo, "timestamp": ts, "requestId": "req_" + mid,
+                       "message": {"id": mid, "model": modelo, "usage": uso}})
+
+
+USO = {"input_tokens": 10, "output_tokens": 100, "cache_creation_input_tokens": 1000,
+       "cache_read_input_tokens": 10000}
+AHORA = reportar.datetime(2026, 8, 11, 18, 0, tzinfo=reportar.timezone.utc)
+UTC = reportar.timezone.utc
+
+
+class TestConsumoTokens(unittest.TestCase):
+    def _escribir(self, tmp, rel, lineas, mtime=None):
+        p = Path(tmp) / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("\n".join(lineas) + "\n")
+        if mtime is not None:
+            os.utime(p, (mtime, mtime))
+        return p
+
+    def test_suma_por_dia_y_modelo_y_cuenta_mensajes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._escribir(tmp, "p/a.jsonl", [
+                _linea("claude-opus-5", USO, mid="m1"),
+                _linea("claude-fable-5-1", USO, mid="m2"),
+                _linea("claude-opus-5", USO, ts="2026-08-10T15:00:00Z", mid="m3"),
+                json.dumps({"type": "user", "timestamp": "2026-08-11T15:00:01Z", "message": {"role": "user"}}),
+            ])
+            c = reportar.consumo_tokens(tmp, AHORA, tz=UTC)
+            self.assertEqual(sorted(c), ["2026-08-10", "2026-08-11"])
+            self.assertEqual(c["2026-08-11"]["claude-opus-5"],
+                             {"msgs": 1, "entrada": 10, "salida": 100, "cache_escr": 1000, "cache_lect": 10000})
+            self.assertEqual(c["2026-08-11"]["claude-fable-5-1"]["msgs"], 1)
+            self.assertEqual(c["2026-08-10"]["claude-opus-5"]["msgs"], 1)
+
+    def test_por_message_id_manda_la_ultima_linea(self):
+        # Claude Code escribe una línea por bloque; las primeras traen output_tokens provisional.
+        with tempfile.TemporaryDirectory() as tmp:
+            self._escribir(tmp, "p/a.jsonl", [
+                _linea("claude-opus-5", {**USO, "output_tokens": 3}, mid="m1"),
+                _linea("claude-opus-5", {**USO, "output_tokens": 3}, mid="m1"),
+                _linea("claude-opus-5", {**USO, "output_tokens": 561}, mid="m1"),
+            ])
+            b = reportar.consumo_tokens(tmp, AHORA, tz=UTC)["2026-08-11"]["claude-opus-5"]
+            self.assertEqual((b["msgs"], b["salida"], b["cache_escr"]), (1, 561, 1000))
+
+    def test_ignora_synthetic_sin_usage_y_basura(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._escribir(tmp, "p/a.jsonl", [
+                _linea("<synthetic>", USO, mid="m1"),
+                json.dumps({"type": "assistant", "timestamp": "2026-08-11T15:00:00Z",
+                            "message": {"id": "m2", "model": "claude-opus-5"}}),
+                json.dumps({"type": "assistant", "timestamp": "2026-08-11T15:00:00Z",
+                            "message": {"id": "m3", "model": "claude-opus-5", "usage": {"output_tokens": "raro"}}}),
+                "esto no es json {",
+                _linea("claude-opus-5", USO, mid="m4", tipo="user"),
+            ])
+            c = reportar.consumo_tokens(tmp, AHORA, tz=UTC)
+            # m3 cuenta como mensaje pero sus campos ilegibles suman 0.
+            self.assertEqual(c, {"2026-08-11": {"claude-opus-5": {
+                "msgs": 1, "entrada": 0, "salida": 0, "cache_escr": 0, "cache_lect": 0}}})
+
+    def test_incluye_subagentes_y_salta_archivos_viejos_sin_abrirlos(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._escribir(tmp, "p/s1/subagents/agent-x.jsonl", [_linea("claude-fable-5", USO, mid="m1")])
+            viejo = (AHORA - reportar.timedelta(days=reportar.CONSUMO_DIAS + 1)).timestamp()
+            # mtime viejo pero con una línea "de hoy": no se abre, así que no cuenta.
+            self._escribir(tmp, "p/viejo.jsonl", [_linea("claude-opus-5", USO, mid="m2")], mtime=viejo)
+            c = reportar.consumo_tokens(tmp, AHORA, tz=UTC)
+            self.assertEqual(list(c["2026-08-11"]), ["claude-fable-5"])
+
+    def test_fuera_de_ventana_por_timestamp_no_cuenta(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._escribir(tmp, "p/a.jsonl", [
+                _linea("claude-opus-5", USO, ts="2026-07-01T15:00:00Z", mid="m1"),
+                _linea("claude-opus-5", USO, ts="sin-fecha", mid="m2"),
+                _linea("claude-opus-5", USO, mid="m3"),
+            ])
+            c = reportar.consumo_tokens(tmp, AHORA, tz=UTC)
+            self.assertEqual(c["2026-08-11"]["claude-opus-5"]["msgs"], 1)
+            self.assertEqual(len(c), 1)
+
+    def test_dia_en_zona_local(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # 02:00Z del 12 es todavía el 11 en Bogotá (UTC-5).
+            self._escribir(tmp, "p/a.jsonl", [_linea("claude-opus-5", USO, ts="2026-08-12T02:00:00Z")])
+            bogota = reportar.timezone(reportar.timedelta(hours=-5))
+            self.assertEqual(list(reportar.consumo_tokens(tmp, AHORA, tz=bogota)), ["2026-08-11"])
+            self.assertEqual(list(reportar.consumo_tokens(tmp, AHORA, tz=UTC)), ["2026-08-12"])
+
+    def test_dir_inexistente_devuelve_vacio(self):
+        self.assertEqual(reportar.consumo_tokens("/no/existe", AHORA, tz=UTC), {})
+
+
+class TestFusionarConsumo(unittest.TestCase):
+    def test_guarda_consumo_en_la_maquina_y_lo_omite_si_none(self):
+        consumo = {"2026-08-11": {"claude-opus-5": {"msgs": 1, "entrada": 1, "salida": 2, "cache_escr": 3, "cache_lect": 4}}}
+        e = reportar.fusionar({}, "Mini", "Gamma", None, None, "2026-08-11T18:00:00Z", consumo)
+        self.assertEqual(e["maquinas"]["Mini"]["consumo"], {"dias": consumo})
+        e = reportar.fusionar(e, "Otro", None, None, None, "2026-08-11T18:00:00Z")
+        self.assertNotIn("consumo", e["maquinas"]["Otro"])
+        self.assertEqual(e["maquinas"]["Mini"]["consumo"], {"dias": consumo})  # no pisa a los demás
+
 
 class TestArmarReporte(unittest.TestCase):
     def test_integra_colectores_sin_tocar_red(self):
         with tempfile.TemporaryDirectory() as tmp:
             cj = {"oauthAccount": {"displayName": "Gamma"}}
             uso = json.loads((Path(__file__).parent / "fixtures" / "uso_real.json").read_text())
-            clave, cuenta, actividad, cupo = reportar.armar_reporte(
+            clave, cuenta, actividad, cupo, consumo = reportar.armar_reporte(
                 cj, tmp, "Mini", "mini", uso, "2026-08-11T18:00:00Z")
             self.assertEqual(clave, "Mini")
             self.assertEqual(cuenta, "Gamma")
             self.assertIsNone(actividad)
             self.assertIsInstance(cupo["cinco_horas"]["pct"], int)
+            self.assertEqual(consumo, {})
 
     def test_deslogueado_y_sin_uso(self):
         with tempfile.TemporaryDirectory() as tmp:
-            clave, cuenta, actividad, cupo = reportar.armar_reporte(
+            clave, cuenta, actividad, cupo, consumo = reportar.armar_reporte(
                 {}, tmp, None, "mini", None, "2026-08-11T18:00:00Z")
             self.assertEqual(clave, "mini")
             self.assertIsNone(cuenta)
             self.assertIsNone(cupo)
+            self.assertEqual(consumo, {})
 
 
 if __name__ == "__main__":

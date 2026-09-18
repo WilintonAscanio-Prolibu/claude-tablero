@@ -140,6 +140,15 @@ class TestRender(unittest.TestCase):
         self.assertIn("Sin sesión", salida)
         self.assertIn("Pro", salida)
 
+    def test_render_fable_solo_si_la_cuenta_lo_tiene(self):
+        estado = estado_demo()
+        estado["cuentas"]["Gamma"]["modelos"] = {"Fable": {"pct": 39, "resetea": None}}
+        salida = cuentas.render(cuentas.agregar(estado, AHORA), AHORA)
+        gamma = next(l for l in salida.splitlines() if "Gamma" in l)
+        alpha = next(l for l in salida.splitlines() if "Alpha" in l)
+        self.assertIn("fab ████░░░░░░  39%", gamma)
+        self.assertNotIn("fab", alpha)
+
     def test_render_sin_dato(self):
         agg = cuentas.agregar({"maquinas": {}, "cuentas": {}}, AHORA)
         self.assertIn("Sin dato de cupo", cuentas.render(agg, AHORA))

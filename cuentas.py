@@ -94,6 +94,9 @@ def render(agregado, ahora):
             f5, fs = c["cupo"]["cinco_horas"], c["cupo"]["semanal"]
             cupo_txt = (f"5h {_barra(f5['pct'])} {f5['pct']:3d}%  "
                         f"sem {_barra(fs['pct'])} {fs['pct']:3d}%")
+            fab = (c["cupo"].get("modelos") or {}).get("Fable")
+            if fab:  # límite semanal propio de Fable, aparte del general
+                cupo_txt += f"  fab {_barra(fab['pct'])} {fab['pct']:3d}%"
             if not c["fresco"]:
                 cupo_txt += f"  (dato de {humanizar(_edad(ahora, c['medido']))})"
         else:
