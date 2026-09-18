@@ -54,11 +54,14 @@
     background: var(--plano); color: var(--tinta);
     font: 15px/1.5 Geist, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
     -webkit-font-smoothing: antialiased;
-    padding: 28px 18px calc(48px + env(safe-area-inset-bottom));
+    padding: 0 18px calc(48px + env(safe-area-inset-bottom));
     max-width: 1220px; margin: 0 auto;
     transition: background .25s ease, color .25s ease;
   }
   .mono { font-family: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace; font-variant-numeric: tabular-nums; }
+
+  /* ─ bloque fijo: cabecera + héroe + encabezado de la tabla se quedan arriba al hacer scroll ─ */
+  .fijo { position: sticky; top: 0; z-index: 5; background: var(--plano); padding-top: 28px; }
 
   /* ─ cabecera ─ */
   header { display: flex; align-items: center; gap: 12px; padding-bottom: 20px; flex-wrap: wrap; }
@@ -113,10 +116,12 @@
              transition: width .7s cubic-bezier(.2,.8,.2,1); }
   @supports not (background: color-mix(in srgb, red 50%, blue)) { .relleno { background: var(--color-cuenta, var(--tinta)); } }
 
-  /* ─ tabla de cuentas ─ */
-  .tabla { border: 1px solid var(--borde); border-radius: 12px; background: var(--carta);
-           margin-top: 16px; overflow: hidden; animation: entra .45s ease-out .07s both; }
-  .thead, .filacta { display: grid; grid-template-columns: 170px 1.25fr 1.25fr .8fr minmax(220px, 310px); gap: 18px; align-items: center; padding: 16px 28px !important; }
+  /* ─ tabla de cuentas: el encabezado vive en el bloque fijo, las filas en su tarjeta ─ */
+  .tabla-cab { margin-top: 16px; border: 1px solid var(--borde); border-bottom: 0; border-radius: 12px 12px 0 0;
+               background: var(--carta); overflow: hidden; animation: entra .45s ease-out .07s both; }
+  .tabla { border: 1px solid var(--borde); border-top: 0; border-radius: 0 0 12px 12px; background: var(--carta);
+           overflow: hidden; animation: entra .45s ease-out .07s both; }
+  .thead, .filacta { display: grid; grid-template-columns: 170px 1.25fr .8fr 1.25fr minmax(220px, 310px); gap: 18px; align-items: center; padding: 16px 28px !important; }
   .thead > *, .filacta > * { min-width: 0; }
   .thead { padding: 10px 28px; background: var(--carta-2); border-bottom: 1px solid var(--borde);
            font-family: "Geist Mono", ui-monospace, monospace; font-size: 11px; letter-spacing: .05em;
@@ -207,6 +212,7 @@
   .cuadros { display: grid; grid-template-columns: 1fr 1fr; }
   .cuadro { padding: 18px 28px 20px; min-width: 0; }
   .cuadro + .cuadro { border-left: 1px solid var(--borde-2); }
+  .cuadro.ancho { grid-column: 1 / -1; border-left: 0; border-top: 1px solid var(--borde-2); }
   .cuadro h3 { font-family: "Geist Mono", ui-monospace, monospace; font-size: 11px; font-weight: 500; letter-spacing: .05em;
                text-transform: uppercase; color: var(--tinta-3); margin-bottom: 12px; }
   .barra-fila { display: grid; grid-template-columns: minmax(150px, 230px) 1fr 84px; gap: 14px; align-items: center; padding: 7px 0; }
@@ -234,7 +240,9 @@
 
   /* ─ móvil: la tabla colapsa a tarjetas ─ */
   @media (max-width: 720px) {
-    .thead { display: none; }
+    .fijo { position: static; }
+    .tabla-cab { display: none; }
+    .tabla { margin-top: 16px; border-top: 1px solid var(--borde); border-radius: 12px; }
     .filacta { grid-template-columns: 1fr; gap: 12px; padding: 16px 18px !important; }
     .maqs { text-align: left; }
     .maq .host, .maq .det { white-space: normal; }
@@ -254,6 +262,7 @@
 </style>
 </head>
 <body>
+<div class="fijo">
 <header>
   <h1>Cuentas Claude</h1>
   <span class="vivo" id="vivo"><span class="punto"></span><span id="vivo-txt">conectando…</span></span>
@@ -263,6 +272,8 @@
     <button onclick="cargar()">Refrescar</button>
   </span>
 </header>
+<div id="cabecera"></div>
+</div>
 <div id="app"><div class="aviso">Cargando…</div></div>
 <div id="tip" role="tooltip"></div>
 <div class="pie"><span id="actualizado">—</span><span>se refresca cada 2 min · <span id="version"></span></span></div>
@@ -270,7 +281,7 @@
 <script src="agregacion.js"></script>
 <script>
 const GIST_ID = "5b820c7ae6023afbfb862b25b5e4c177"; // mismo valor que reportar.py
-const VERSION = "v16"; // subir en cada cambio de UI — dispara la auto-recarga de pestañas abiertas
+const VERSION = "v17"; // subir en cada cambio de UI — dispara la auto-recarga de pestañas abiertas
 // ?estado=<url> permite previsualizar el tablero con otro estado.json (p. ej. uno local) sin tocar el gist.
 const ESTADO_URL = new URLSearchParams(location.search).get("estado");
 /* la familia del modelo va en orden fijo sobre la misma paleta categórica: Fable siempre naranja */
@@ -432,12 +443,13 @@ function consumoHtml(estado) {
     <div class="eje">${c.porDia.map(d => `<span class="${d.dia === hoy ? "hoy" : ""}">${new Date(d.dia + "T12:00:00").getDate()}</span>`).join("")}</div></div>`;
   }
 
-  // Por modelo y por cuenta, a propósito no por máquina: el tablero responde qué modelo gasta y
-  // qué cuenta se agota, no quién. (El gist sí trae el dato por compu: así está diseñado.)
-  const maxModelo = c.porModelo[0].total, maxCuenta = c.porCuenta[0].total;
+  // Por máquina es el dato de origen (cada compu publica el suyo); por cuenta es derivado:
+  // suma las máquinas que hoy están en esa cuenta.
+  const maxModelo = c.porModelo[0].total, maxCuenta = c.porCuenta[0].total, maxMaq = c.porMaquina[0].total;
   html += `<div class="cuadros">
     <div class="cuadro"><h3>Por modelo</h3>${c.porModelo.map(m => filaBarra(m.nombre, desglose(m), m, maxModelo, m.familia)).join("")}</div>
     <div class="cuadro"><h3>Por cuenta</h3>${c.porCuenta.map(x => filaBarra(x.alias, desglose(x), x, maxCuenta)).join("")}</div>
+    <div class="cuadro ancho"><h3>Por máquina</h3>${c.porMaquina.map(m => filaBarra(m.clave, `${m.cuenta || "sin sesión"} · ${desglose(m)}`, m, maxMaq)).join("")}</div>
   </div></section>`;
   return html;
 }
@@ -476,12 +488,12 @@ function pintar(estado) {
   const ahoraMs = Date.now();
   const agg = agregar(estado, new Date(ahoraMs).toISOString());
   const colores = mapaColores(agg.cuentas.map(c => c.alias));
-  let html = "";
+  let cabecera = "", html = "";
 
   /* héroe */
   const r = agg.recomendada;
   if (r === null) {
-    html += `<div class="heroe"><div><div class="miga">→ Usa</div>
+    cabecera += `<div class="heroe"><div><div class="miga">→ Usa</div>
       <div class="alias-grande">Sin dato de cupo</div>
       <div class="sub">ninguna cuenta tiene medición todavía</div></div></div>`;
   } else {
@@ -493,18 +505,18 @@ function pintar(estado) {
       : "";
     const libres = c && c.cupo ? `<div class="libres">
         <div><div class="fila"><span>5 h libre</span><b>${esc(String(100 - c.cupo.cinco_horas.pct))}%</b></div>${barra(100 - c.cupo.cinco_horas.pct)}</div>
-        <div><div class="fila"><span>semana libre</span><b>${esc(String(100 - c.cupo.semanal.pct))}%</b></div>${barra(100 - c.cupo.semanal.pct)}</div>
         ${c.cupo.modelos && c.cupo.modelos.Fable ? `<div><div class="fila"><span>Fable libre</span><b>${esc(String(100 - c.cupo.modelos.Fable.pct))}%</b></div>${barra(100 - c.cupo.modelos.Fable.pct)}</div>` : ""}
+        <div><div class="fila"><span>semana libre</span><b>${esc(String(100 - c.cupo.semanal.pct))}%</b></div>${barra(100 - c.cupo.semanal.pct)}</div>
       </div>` : "";
-    html += `<div class="heroe" style="--glow:${glow};--color-cuenta:${colores[r.alias] || "var(--tinta)"}"><div style="min-width:0">
+    cabecera += `<div class="heroe" style="--glow:${glow};--color-cuenta:${colores[r.alias] || "var(--tinta)"}"><div style="min-width:0">
       <div class="miga">→ Usa</div>
       <div class="alias-grande">${esc(r.alias)}</div>
       <div class="sub">${sub}</div></div>${libres}</div>`;
   }
 
   /* tabla de cuentas */
-  html += `<div class="tabla">
-    <div class="thead"><span>Cuenta</span><span>5 horas</span><span>Semana</span><span>Fable · semana</span><span>Máquinas</span></div>`;
+  cabecera += `<div class="tabla-cab"><div class="thead"><span>Cuenta</span><span>Sesión · 5 h</span><span>Fable · semanal</span><span>Semanal</span><span>Máquinas</span></div></div>`;
+  html += `<div class="tabla">`;
   agg.cuentas.forEach((c, i) => {
     const vieja = c.cupo && !c.fresco;
     const agotada = c.semaforo === "rojo" && c.score >= 99;
@@ -517,9 +529,9 @@ function pintar(estado) {
     html += `<div class="filacta ${vieja ? "vieja" : ""} ${alarma}" style="--color-cuenta:${colores[c.alias]};animation-delay:${.1 + i * .06}s">
       <div class="cta-id"><span class="punto"></span><span style="min-width:0">
         <span class="alias">${esc(c.alias)}</span><br><span class="etiq">${etiq}</span></span></div>
-      ${c.cupo ? medidor("5 h", c.cupo.cinco_horas, vieja) : `<div class="sindato-txt">sin medición — se llena cuando un compu entre a esta cuenta</div>`}
-      ${c.cupo ? medidor("sem", c.cupo.semanal, vieja) : `<div class="sindato-txt"></div>`}
+      ${c.cupo ? medidor("sesión", c.cupo.cinco_horas, vieja) : `<div class="sindato-txt">sin medición — se llena cuando un compu entre a esta cuenta</div>`}
       ${medidorModelo(c, "Fable", vieja)}
+      ${c.cupo ? medidor("semanal", c.cupo.semanal, vieja) : `<div class="sindato-txt"></div>`}
       <div class="maqs">${maqs}</div>
     </div>`;
   });
@@ -543,6 +555,7 @@ function pintar(estado) {
   const agotadas = agg.cuentas.filter(c => c.semaforo === "rojo").length;
   document.title = (agotadas ? "🔴 " : "") + "Cuentas Claude";
 
+  document.getElementById("cabecera").innerHTML = cabecera;
   document.getElementById("app").innerHTML = html;
   if (primeraPintura) {
     requestAnimationFrame(() => requestAnimationFrame(() => {
