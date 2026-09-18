@@ -191,6 +191,12 @@
   .seg button { height: 28px; padding: 0 11px; border: 0; border-radius: 0; background: transparent; font-size: 12.5px; color: var(--tinta-2); }
   .seg button + button { border-left: 1px solid var(--borde); }
   .seg button[aria-pressed="true"] { background: var(--tinta); color: var(--plano); }
+  .filtro { height: 28px; padding: 0 28px 0 11px; border: 1px solid var(--borde); border-radius: 8px; background: var(--carta); color: var(--tinta-2);
+            font-size: 12.5px; font-family: inherit; max-width: 240px; appearance: none; -webkit-appearance: none; cursor: pointer;
+            background-image: linear-gradient(45deg, transparent 50%, var(--tinta-3) 50%), linear-gradient(135deg, var(--tinta-3) 50%, transparent 50%);
+            background-position: right 14px center, right 9px center; background-size: 5px 5px, 5px 5px; background-repeat: no-repeat; }
+  .filtro[data-activo="1"] { background-color: var(--tinta); color: var(--plano); border-color: var(--tinta);
+            background-image: linear-gradient(45deg, transparent 50%, var(--plano) 50%), linear-gradient(135deg, var(--plano) 50%, transparent 50%); }
   .leyenda { margin-left: auto; display: flex; gap: 14px; flex-wrap: wrap; font-family: "Geist Mono", ui-monospace, monospace; font-size: 11.5px; color: var(--tinta-2); }
   .leyenda span { display: inline-flex; align-items: center; gap: 6px; }
   .leyenda i { width: 10px; height: 10px; border-radius: 2px; background: var(--f); }
@@ -216,6 +222,9 @@
   .cuadro h3 { font-family: "Geist Mono", ui-monospace, monospace; font-size: 11px; font-weight: 500; letter-spacing: .05em;
                text-transform: uppercase; color: var(--tinta-3); margin-bottom: 12px; }
   .barra-fila { display: grid; grid-template-columns: minmax(150px, 230px) 1fr 84px; gap: 14px; align-items: center; padding: 7px 0; }
+  .barra-fila.clic { cursor: pointer; margin: 0 -10px; padding-left: 10px; padding-right: 10px; border-radius: 8px; }
+  .barra-fila.clic:hover { background: var(--carta-2); }
+  .barra-fila.clic[aria-pressed="true"] { background: var(--carta-2); box-shadow: inset 2px 0 0 var(--tinta); }
   .barra-fila .nom { min-width: 0; }
   .barra-fila .nom .t { font-size: 13.5px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: flex; align-items: center; gap: 7px; }
   .barra-fila .nom .t i { width: 8px; height: 8px; border-radius: 2px; flex: none; background: var(--f); }
@@ -281,13 +290,15 @@
 <script src="agregacion.js"></script>
 <script>
 const GIST_ID = "5b820c7ae6023afbfb862b25b5e4c177"; // mismo valor que reportar.py
-const VERSION = "v17"; // subir en cada cambio de UI — dispara la auto-recarga de pestañas abiertas
+const VERSION = "v18"; // subir en cada cambio de UI — dispara la auto-recarga de pestañas abiertas
 // ?estado=<url> permite previsualizar el tablero con otro estado.json (p. ej. uno local) sin tocar el gist.
 const ESTADO_URL = new URLSearchParams(location.search).get("estado");
 /* la familia del modelo va en orden fijo sobre la misma paleta categórica: Fable siempre naranja */
 const COLOR_FAMILIA = { Opus: "var(--cat1)", Fable: "var(--cat2)", Sonnet: "var(--cat3)", Haiku: "var(--cat4)", Otro: "var(--cat5)" };
 const VENTANAS = [[1, "Hoy"], [7, "7 días"], [14, "14 días"]];
 let ventanaDias = Number(localStorage.getItem("consumo_dias")) || 7;
+// Filtro del consumo: { cuenta } o { maquina }, o null para todo. Se guarda como "c:Alias" / "m:Clave".
+let filtroActivo = filtroDesdeTexto(localStorage.getItem("consumo_filtro"));
 let ultimoEstado = null;
 let ultimoFetchOk = null;
 let primeraPintura = true;
@@ -394,13 +405,17 @@ function apilada(porFamilia, total, etiqueta) {
   return `<div class="apilada">${segs.join("")}</div>`;
 }
 
-function filaBarra(nombre, detalle, fila, max, colorFamilia) {
+// `clic` (opcional): valor de filtro ("c:Alias" / "m:Clave"); la fila se vuelve un botón que lo aplica o lo quita.
+function filaBarra(nombre, detalle, fila, max, colorFamilia, clic) {
   const ancho = max ? (fila.total / max * 100).toFixed(2) : 0;
+  const boton = clic
+    ? ` role="button" tabindex="0" aria-pressed="${clic === filtroATexto(filtroActivo)}" data-filtro="${esc(clic)}" onclick="filtrar(this.dataset.filtro)" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();filtrar(this.dataset.filtro)}"`
+    : "";
   const swatch = colorFamilia ? `<i style="--f:${COLOR_FAMILIA[colorFamilia]}"></i>` : "";
   const barra = colorFamilia
     ? `<div class="apilada"><i style="--f:${COLOR_FAMILIA[colorFamilia]};width:${ancho}%" ${tip(humanizarTokens(fila.total), nombre)}></i></div>`
     : `<div style="width:${ancho}%;min-width:0">${apilada(fila.porFamilia, fila.total, nombre)}</div>`;
-  return `<div class="barra-fila">
+  return `<div class="barra-fila${clic ? " clic" : ""}"${boton}>
     <div class="nom"><div class="t" title="${esc(nombre)}">${swatch}<span style="min-width:0;overflow:hidden;text-overflow:ellipsis">${esc(nombre)}</span></div><div class="d" title="${esc(detalle)}">${esc(detalle)}</div></div>
     ${barra}
     <div class="val">${esc(humanizarTokens(fila.total))}</div>
@@ -411,9 +426,50 @@ function desglose(f) {
   return `salida ${humanizarTokens(f.salida)} · entrada ${humanizarTokens(f.entrada)} · caché ${humanizarTokens(f.cache)} · ${f.msgs.toLocaleString("es-CO")} msgs`;
 }
 
+function filtroDesdeTexto(t) {
+  if (!t) return null;
+  const valor = t.slice(2);
+  if (t.startsWith("c:") && valor) return { cuenta: valor };
+  if (t.startsWith("m:") && valor) return { maquina: valor };
+  return null;
+}
+
+function filtroATexto(f) {
+  return f ? (f.maquina ? `m:${f.maquina}` : `c:${f.cuenta}`) : "";
+}
+
+// El selector ofrece solo lo que tiene consumo en la ventana; un filtro guardado que ya no
+// aparece (compu apagado, cuenta sin uso) se descarta en vez de dejar el tablero vacío.
+function selectorFiltro(todo) {
+  const cuentas = todo.porCuenta.map(x => x.alias), maquinas = todo.porMaquina.map(m => m.clave);
+  if (filtroActivo && !(filtroActivo.cuenta ? cuentas.includes(filtroActivo.cuenta) : maquinas.includes(filtroActivo.maquina))) {
+    filtroActivo = null;
+    localStorage.removeItem("consumo_filtro");
+  }
+  const actual = filtroATexto(filtroActivo);
+  const opcion = (v, t) => `<option value="${esc(v)}" ${v === actual ? "selected" : ""}>${esc(t)}</option>`;
+  const grupo = (titulo, items) => items.length ? `<optgroup label="${titulo}">${items.join("")}</optgroup>` : "";
+  return `<select class="filtro" aria-label="Filtrar por cuenta o máquina" data-activo="${actual ? 1 : 0}" onchange="filtrar(this.value)">
+    ${opcion("", "Todas")}
+    ${grupo("Cuentas", cuentas.map(a => opcion(`c:${a}`, a)))}
+    ${grupo("Máquinas", maquinas.map(k => opcion(`m:${k}`, k)))}
+  </select>`;
+}
+
+function filtrar(texto) {
+  const nuevo = filtroDesdeTexto(texto);
+  // Clic sobre la fila ya activa: quita el filtro.
+  filtroActivo = nuevo && filtroATexto(nuevo) === filtroATexto(filtroActivo) ? null : nuevo;
+  if (filtroActivo) localStorage.setItem("consumo_filtro", filtroATexto(filtroActivo));
+  else localStorage.removeItem("consumo_filtro");
+  if (ultimoEstado) pintar(ultimoEstado);
+}
+
 function consumoHtml(estado) {
   const hoy = hoyLocal();
-  const c = consumo(estado, hoy, ventanaDias);
+  const todo = consumo(estado, hoy, ventanaDias);
+  const selector = selectorFiltro(todo);
+  const c = filtroActivo ? consumo(estado, hoy, ventanaDias, filtroActivo) : todo;
   const seg = `<div class="seg" role="group" aria-label="Ventana">${VENTANAS.map(([d, t]) =>
     `<button type="button" aria-pressed="${d === ventanaDias}" onclick="ventana(${d})">${t}</button>`).join("")}</div>`;
   const leyenda = c.porFamilia.length ? `<div class="leyenda">${c.porFamilia.map(f =>
@@ -421,7 +477,7 @@ function consumoHtml(estado) {
   const resumen = c.total
     ? `<span class="resumen"><b>${esc(humanizarTokens(c.total))}</b> tokens · <b>${esc(humanizarTokens(c.salida))}</b> de salida · ${c.msgs.toLocaleString("es-CO")} msgs · ${c.porMaquina.length} ${c.porMaquina.length === 1 ? "máquina" : "máquinas"}</span>`
     : "";
-  let html = `<section class="consumo"><div class="cab"><h2>Consumo de tokens</h2>${seg}${resumen}${leyenda}</div>`;
+  let html = `<section class="consumo"><div class="cab"><h2>Consumo de tokens</h2>${seg}${selector}${resumen}${leyenda}</div>`;
   if (!c.total) {
     html += `<div class="vacio">Sin datos de consumo en esta ventana. Cada compu los publica al reportar (hace falta el reportero actualizado).</div></section>`;
     return html;
@@ -448,8 +504,8 @@ function consumoHtml(estado) {
   const maxModelo = c.porModelo[0].total, maxCuenta = c.porCuenta[0].total, maxMaq = c.porMaquina[0].total;
   html += `<div class="cuadros">
     <div class="cuadro"><h3>Por modelo</h3>${c.porModelo.map(m => filaBarra(m.nombre, desglose(m), m, maxModelo, m.familia)).join("")}</div>
-    <div class="cuadro"><h3>Por cuenta</h3>${c.porCuenta.map(x => filaBarra(x.alias, desglose(x), x, maxCuenta)).join("")}</div>
-    <div class="cuadro ancho"><h3>Por máquina</h3>${c.porMaquina.map(m => filaBarra(m.clave, `${m.cuenta || "sin sesión"} · ${desglose(m)}`, m, maxMaq)).join("")}</div>
+    <div class="cuadro"><h3>Por cuenta</h3>${c.porCuenta.map(x => filaBarra(x.alias, desglose(x), x, maxCuenta, null, `c:${x.alias}`)).join("")}</div>
+    <div class="cuadro ancho"><h3>Por máquina</h3>${c.porMaquina.map(m => filaBarra(m.clave, `${m.cuenta || SIN_SESION} · ${desglose(m)}`, m, maxMaq, null, `m:${m.clave}`)).join("")}</div>
   </div></section>`;
   return html;
 }

@@ -194,6 +194,47 @@ test("consumo: hoy = solo el día de hoy; la serie trae todos los días aunque e
   assert.deepEqual(sem.porDia[6].porFamilia, { Opus: 1610, Fable: 1160 + 1510 });
 });
 
+test("consumo: filtro por máquina deja solo ese compu en todos los cortes", () => {
+  const c = consumo(estadoConsumo(), "2026-08-11", 7, { maquina: "Air" });
+  assert.equal(c.msgs, 5);
+  assert.equal(c.salida, 400 + 5);
+  assert.deepEqual(c.porMaquina.map(m => m.clave), ["Air"]);
+  assert.deepEqual(c.porCuenta.map(x => x.alias), ["Alpha"]);
+  assert.deepEqual(c.porModelo.map(m => m.id), ["claude-fable-5", "claude-opus-4-8"]);
+  assert.deepEqual(c.porDia.map(d => d.msgs), [0, 0, 0, 0, 1, 0, 4]);
+  assert.deepEqual(c.filtro, { maquina: "Air" });
+});
+
+test("consumo: filtro por cuenta suma solo las máquinas que hoy están en esa cuenta", () => {
+  const c = consumo(estadoConsumo(), "2026-08-11", 7, { cuenta: "Gamma" });
+  assert.equal(c.msgs, 4);
+  assert.deepEqual(c.porMaquina.map(m => m.clave), ["Mini"]);
+  assert.deepEqual(c.porCuenta.map(x => x.alias), ["Gamma"]);
+  assert.deepEqual(c.filtro, { cuenta: "Gamma" });
+});
+
+test("consumo: filtro 'sin sesión' toma las máquinas sin cuenta", () => {
+  const e = estadoConsumo();
+  e.maquinas.Pro.consumo = { dias: { "2026-08-11": { "claude-sonnet-5": B(3, 30) } } };
+  const c = consumo(e, "2026-08-11", 7, { cuenta: "sin sesión" });
+  assert.equal(c.msgs, 3);
+  assert.deepEqual(c.porMaquina.map(m => [m.clave, m.cuenta]), [["Pro", null]]);
+});
+
+test("consumo: filtro que no coincide con nada deja la ventana vacía pero completa", () => {
+  const c = consumo(estadoConsumo(), "2026-08-11", 7, { maquina: "Fantasma" });
+  assert.equal(c.total, 0);
+  assert.deepEqual(c.porMaquina, []);
+  assert.equal(c.porDia.length, 7);
+});
+
+test("consumo: sin filtro (undefined, null o vacío) es lo mismo que todo", () => {
+  const todo = consumo(estadoConsumo(), "2026-08-11", 7);
+  assert.equal(consumo(estadoConsumo(), "2026-08-11", 7, null).msgs, todo.msgs);
+  assert.equal(consumo(estadoConsumo(), "2026-08-11", 7, {}).msgs, todo.msgs);
+  assert.strictEqual(todo.filtro, null);
+});
+
 test("consumo: sin datos de consumo no revienta", () => {
   const c = consumo(estadoDemo(), "2026-08-11", 7);
   assert.equal(c.total, 0);

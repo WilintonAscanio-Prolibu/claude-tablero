@@ -112,16 +112,30 @@ function diaMas(dia, n) {
   return d.toISOString().slice(0, 10);
 }
 
+const SIN_SESION = "sin sesión";
+
+// { cuenta } o { maquina } → función que decide si una máquina entra en la suma. Sin filtro
+// (undefined, null, {}) entra todo. `cuenta: "sin sesión"` toma las máquinas sin cuenta.
+function filtroConsumo(filtro) {
+  if (!filtro) return null;
+  if (filtro.maquina) return { filtro: { maquina: filtro.maquina }, pasa: (clave) => clave === filtro.maquina };
+  if (filtro.cuenta) return { filtro: { cuenta: filtro.cuenta }, pasa: (clave, m) => (m.cuenta || SIN_SESION) === filtro.cuenta };
+  return null;
+}
+
 // `hoy` es la fecha local de quien mira (YYYY-MM-DD); la ventana son los `dias` días que
 // terminan hoy. Los días del gist son locales de cada compu, así que "hoy" coincide para
-// todos los que estén en la misma zona horaria.
-function consumo(estado, hoy, dias) {
+// todos los que estén en la misma zona horaria. `filtro` (opcional) limita la suma a una
+// cuenta o a una máquina; el resultado lo devuelve normalizado en `filtro`.
+function consumo(estado, hoy, dias, filtro) {
   const desde = diaMas(hoy, -(dias - 1));
   const enVentana = d => d >= desde && d <= hoy;
   const porDia = {}, porModelo = {}, porMaquina = {}, porCuenta = {}, porFamilia = {};
   const global = {};
+  const f = filtroConsumo(filtro);
 
   for (const [clave, m] of Object.entries(estado.maquinas || {})) {
+    if (f && !f.pasa(clave, m)) continue;
     const diasM = (m.consumo && m.consumo.dias) || {};
     const maq = { clave, cuenta: m.cuenta || null, porFamilia: {}, acumulado: {} };
     for (const [dia, modelos] of Object.entries(diasM)) {
@@ -143,7 +157,7 @@ function consumo(estado, hoy, dias) {
   }
 
   for (const maq of Object.values(porMaquina)) {
-    const alias = maq.cuenta || "sin sesión";
+    const alias = maq.cuenta || SIN_SESION;
     const c = porCuenta[alias] = porCuenta[alias] || { alias, porFamilia: {}, acumulado: {}, maquinas: [] };
     sumar(c.acumulado, maq.acumulado);
     for (const [fam, b] of Object.entries(maq.porFamilia)) sumar(c.porFamilia[fam] = c.porFamilia[fam] || {}, b);
@@ -161,7 +175,7 @@ function consumo(estado, hoy, dias) {
   }
 
   return {
-    desde, hasta: hoy, dias,
+    desde, hasta: hoy, dias, filtro: f ? f.filtro : null,
     ...totales(global),
     porDia: listaDias,
     porFamilia: FAMILIAS.filter(f => porFamilia[f]).map(f => ({ familia: f, ...totales(porFamilia[f]) })),
@@ -184,5 +198,5 @@ function humanizarTokens(n) {
 }
 
 if (typeof module !== "undefined") module.exports = {
-  agregar, humanizar, consumo, humanizarTokens, familiaModelo, nombreModelo, FAMILIAS, FRESCO_S, EN_USO_S,
+  agregar, humanizar, consumo, humanizarTokens, familiaModelo, nombreModelo, FAMILIAS, SIN_SESION, FRESCO_S, EN_USO_S,
 };
